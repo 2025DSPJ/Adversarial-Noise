@@ -159,19 +159,17 @@ def upload_file():
         img_tensor = flexible_resize_transform(img)
         result = fgsm_attack_with_blur(img_tensor, model)
         
-        # undefined 방지를 위한 안전한 값 반환
         return jsonify({
-            'original_image': tensor_to_base64(result['original_image']),
-            'adversarial_image': tensor_to_base64(result['adversarial_image']),
-            'original_prediction': result.get('original_class', 'Unknown'),
-            'adversarial_prediction': result.get('adversarial_class', 'Unknown'),
-            'original_confidence': f"{result.get('original_conf', 0):.3f}",
-            'adversarial_confidence': f"{result.get('adversarial_conf', 0):.3f}", 
-            'attack_success': result.get('attack_success', False),
-            'confidence_drop': f"{result.get('confidence_drop', 0)*100:.1f}%",
-            'epsilon_used': f"{result.get('epsilon_used', 0.01):.3f}",
-            'sigma_used': f"{result.get('sigma_used', 0.4):.2f}",
-            'message': '업로드된 이미지에 적대적 노이즈 적용 완료!'
+            'originalFilePath': tensor_to_base64(result['original_image']),
+            'processedFilePath': tensor_to_base64(result['adversarial_image']),
+            'epsilon': float(result.get('epsilon_used', 0.03)),
+            'attackSuccess': result.get('attack_success', False),
+            'originalPrediction': result.get('original_class', 'Unknown'),
+            'adversarialPrediction': result.get('adversarial_class', 'Unknown'),
+            'originalConfidence': f"{result.get('original_conf', 0):.3f}",
+            'adversarialConfidence': f"{result.get('adversarial_conf', 0):.3f}",
+            'confidenceDrop': f"{result.get('confidence_drop', 0)*100:.1f}%",
+            'message': '처리 완료'
         })
         
     except Exception as e:
