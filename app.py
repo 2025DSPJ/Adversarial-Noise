@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify, send_file
+from flask_cors import CORS
 import torch
 import torch.nn.functional as F
 import torchvision.models as models
@@ -12,6 +13,16 @@ import requests
 import json
 
 app = Flask(__name__)
+
+# CORS 설정
+CORS(app, origins=[
+    "http://localhost:3000",  # React
+    "http://localhost:8080",  # Vue
+    "http://localhost:5173",  # Vite
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8080",
+    "http://127.0.0.1:5173"
+])
 
 # 모델 로드
 print("모델 로딩 중...")
@@ -119,7 +130,6 @@ def fgsm_attack_with_blur(image_tensor, model, base_epsilon=0.015, base_sigma=0.
         'adversarial_image': adv_blur.squeeze(0).detach()
     }
 
-# 파일 확장자 검사 함수 
 def allowed_file(filename):
     ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
     return '.' in filename and \
@@ -135,12 +145,10 @@ def tensor_to_base64(tensor):
     img_str = base64.b64encode(buffer.getvalue()).decode()
     return f"data:image/png;base64,{img_str}"
 
-# Flask 라우트들
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# 업로드 라우트 수정
 @app.route('/upload', methods=['POST'])
 def upload_file():
     try:
@@ -159,19 +167,19 @@ def upload_file():
         img_tensor = flexible_resize_transform(img)
         result = fgsm_attack_with_blur(img_tensor, model)
         
-        # undefined 방지를 위한 안전한 값 반환
         return jsonify({
-            'original_image': tensor_to_base64(result['original_image']),
-            'adversarial_image': tensor_to_base64(result['adversarial_image']),
-            'original_prediction': result.get('original_class', 'Unknown'),
-            'adversarial_prediction': result.get('adversarial_class', 'Unknown'),
-            'original_confidence': f"{result.get('original_conf', 0):.3f}",
-            'adversarial_confidence': f"{result.get('adversarial_conf', 0):.3f}", 
-            'attack_success': result.get('attack_success', False),
-            'confidence_drop': f"{result.get('confidence_drop', 0)*100:.1f}%",
-            'epsilon_used': f"{result.get('epsilon_used', 0.01):.3f}",
-            'sigma_used': f"{result.get('sigma_used', 0.4):.2f}",
-            'message': '업로드된 이미지에 적대적 노이즈 적용 완료!'
+            'originalFilePath': tensor_to_base64(result['original_image']),
+            'processedFilePath': tensor_to_base64(result['adversarial_image']),
+            'epsilon': float(result.get('epsilon_used', 0.03)),
+            
+            # 추가 정보
+            'attackSuccess': result.get('attack_success', False),
+            'originalPrediction': result.get('original_class', 'Unknown'),
+            'adversarialPrediction': result.get('adversarial_class', 'Unknown'),
+            'originalConfidence': f"{result.get('original_conf', 0):.3f}",
+            'adversarialConfidence': f"{result.get('adversarial_conf', 0):.3f}",
+            'confidenceDrop': f"{result.get('confidence_drop', 0)*100:.1f}%",
+            'message': '설정 완료'
         })
         
     except Exception as e:
