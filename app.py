@@ -106,7 +106,6 @@ def fgsm_attack_with_blur(image_tensor, model, base_epsilon=0.015, base_sigma=0.
     attack_success = pred.item() != adv_pred.item()
     confidence_drop = conf.item() - adv_conf.item()
     
-    # Java Entity와 매핑
     return {
         'original_class': original_class,
         'adversarial_class': adversarial_class,
