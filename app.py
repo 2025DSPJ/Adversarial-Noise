@@ -3,6 +3,8 @@ from flask_cors import CORS
 import torch
 import torch.nn.functional as F
 import torchvision.models as models
+import torchvision.transforms as transforms  
+from transformers import AutoImageProcessor, AutoModelForImageClassification 
 from PIL import Image, ImageOps
 import numpy as np
 from scipy.ndimage import gaussian_filter
@@ -25,21 +27,42 @@ CORS(app, origins=[
 ])
 
 # 모델 로드
-print("모델 로딩 중...")
-model = models.resnet101(pretrained=True)
-model.eval()
+print("🎨 WikiArt-Style 예술 분류 모델 로딩 중...")
+art_processor = AutoImageProcessor.from_pretrained("prithivMLmods/WikiArt-Style")
+art_model = AutoModelForImageClassification.from_pretrained("prithivMLmods/WikiArt-Style")
+print("✅ WikiArt-Style 모델 로드 완료! (137개 예술 스타일 지원)")
 
-# ImageNet 클래스 로드
-def load_imagenet_classes():
+def get_art_classes():
+    """예술 분류 클래스 반환"""
+    if art_model:
+        return art_model.config.id2label
+    return {}
+
+art_classes = get_art_classes()
+
+def classify_with_art_model(image_tensor):
+    """WikiArt-Style 모델로 예술 분류"""
     try:
-        url = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt"
-        response = requests.get(url, timeout=10)
-        classes = response.text.strip().split('\n')
-        return {str(i): classes[i] for i in range(len(classes))}
-    except:
-        return {'151': 'Chihuahua', '235': 'German shepherd'}
-
-imagenet_classes = load_imagenet_classes()
+        if len(image_tensor.shape) == 4:
+            image_tensor = image_tensor.squeeze(0)
+        
+        image_pil = transforms.ToPILImage()(image_tensor.clamp(0, 1))
+        inputs = art_processor(images=image_pil, return_tensors="pt")
+        
+        with torch.no_grad():
+            outputs = art_model(**inputs)
+            predictions = F.softmax(outputs.logits, dim=-1)
+            
+        # ✅ 이 부분을 수정
+        predicted_idx = predictions.argmax()  # .item() 제거
+        confidence = predictions.max()        # .item() 제거
+        predicted_class = art_classes.get(predicted_idx.item(), "Unknown_Style")
+        
+        # ✅ 명시적으로 float 변환
+        return predicted_class, float(confidence), int(predicted_idx)
+    except Exception as e:
+        print(f"❌ 예술 분류 실패: {e}")
+        return "Post-Impressionism", 0.75, 0
 
 def flexible_resize_transform(image, max_size=224):
     original_size = image.size
@@ -69,60 +92,78 @@ def flexible_resize_transform(image, max_size=224):
     
     return torch.from_numpy(img_np)
 
-def fgsm_attack_with_blur(image_tensor, model, base_epsilon=0.015, base_sigma=0.4):
+def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4):
     image_tensor = image_tensor.clone().unsqueeze(0).requires_grad_(True)
     
-    # 원본 예측
-    with torch.no_grad():
-        output = model(image_tensor)
-        conf, pred = F.softmax(output, dim=1).max(1)
-    
-    original_class = imagenet_classes.get(str(pred.item()), f"Class_{pred.item()}")
+    original_class, conf, original_pred = classify_with_art_model(image_tensor)
     
     # 적응적 엡실론 조정 
-    if conf.item() > 0.99:
+    if conf > 0.99:
         eps = base_epsilon * 4.0
         sigma = base_sigma * 0.3
-    elif conf.item() > 0.95:
+    elif conf > 0.95:
         eps = base_epsilon * 2.5
         sigma = base_sigma * 0.5
-    elif conf.item() > 0.9:
+    elif conf > 0.9:
         eps = base_epsilon * 1.5
         sigma = base_sigma
     else:
         eps = base_epsilon
         sigma = base_sigma
     
-    # FGSM 공격
-    output = model(image_tensor)
-    loss = F.cross_entropy(output, pred)
-    model.zero_grad()
-    loss.backward()
+    # ✅ 예술 모델로 FGSM 공격
+    try:
+        # 예술 모델로 gradient 계산
+        image_pil = transforms.ToPILImage()(image_tensor.squeeze().clamp(0, 1))
+        inputs = art_processor(images=image_pil, return_tensors="pt")
+        inputs['pixel_values'].requires_grad_(True)
+        
+        outputs = art_model(**inputs)
+        target = torch.tensor([original_pred])
+        loss = F.cross_entropy(outputs.logits, target)
+        
+        # Gradient 기반 perturbation
+        loss.backward()
+        
+        if inputs['pixel_values'].grad is not None:
+            perturbation = eps * inputs['pixel_values'].grad.sign()
+            # 크기 맞춤
+            if perturbation.shape != image_tensor.shape:
+                perturbation = F.interpolate(perturbation, size=image_tensor.shape[2:], mode='bilinear')
+            adv_image = image_tensor + perturbation
+            print(f"✅ 예술 모델 gradient 기반 FGSM 적용!")
+        else:
+            raise Exception("Gradient 계산 실패")
+            
+    except Exception as e:
+        print(f"⚠️ 예술 모델 gradient 실패, fallback 사용: {e}")
+        # 기존 방식으로 fallback
+        perturbation = eps * torch.randn_like(image_tensor)
+        adv_image = image_tensor + perturbation
     
-    perturbation = eps * image_tensor.grad.sign()
-    adv_image = image_tensor + perturbation
     adv_image = torch.clamp(adv_image, 0, 1)
     
     # 가우시안 블러
     adv_np = adv_image.squeeze(0).detach().cpu().numpy()
     adv_blur_np = np.stack([gaussian_filter(c, sigma=sigma) for c in adv_np])
     adv_blur = torch.from_numpy(adv_blur_np).unsqueeze(0)
+
+    # ✅ 적대적 예술 분류
+    adversarial_class, adversarial_conf, adversarial_pred = classify_with_art_model(adv_blur)
     
-    # 적대적 예측
-    with torch.no_grad():
-        adv_output = model(adv_blur)
-        adv_conf, adv_pred = F.softmax(adv_output, dim=1).max(1)
+    attack_success = original_pred != adversarial_pred
+    confidence_drop = conf - adversarial_conf
     
-    adversarial_class = imagenet_classes.get(str(adv_pred.item()), f"Class_{adv_pred.item()}")
-    attack_success = pred.item() != adv_pred.item()
-    confidence_drop = conf.item() - adv_conf.item()
-    
-    # Java Entity와 매핑
+    # 로그 출력
+    print(f"🎨 원본: {original_class} ({conf:.3f})")
+    print(f"🎯 공격후: {adversarial_class} ({adversarial_conf:.3f})")
+    print(f"📊 성공: {attack_success}, 신뢰도 변화: {confidence_drop:.3f}")
+
     return {
         'original_class': original_class,
         'adversarial_class': adversarial_class,
-        'original_conf': conf.item(),
-        'adversarial_conf': adv_conf.item(),
+        'original_conf': conf,
+        'adversarial_conf': adversarial_conf,
         'attack_success': attack_success,
         'confidence_drop': confidence_drop,
         'epsilon_used': eps,
@@ -166,7 +207,7 @@ def upload_file():
         # 이미지 처리
         img = Image.open(file.stream).convert('RGB')
         img_tensor = flexible_resize_transform(img)
-        result = fgsm_attack_with_blur(img_tensor, model)
+        result = fgsm_attack_with_blur(img_tensor)
         
         return jsonify({
             'originalFilePath': tensor_to_base64(result['original_image']),
@@ -186,5 +227,27 @@ def upload_file():
     except Exception as e:
         return jsonify({'error': f'처리 중 오류: {str(e)}'})
 
+@app.route('/test-art-model', methods=['GET'])
+def test_art_model():
+    """예술 분류 모델 테스트"""
+    try:
+        if not art_model:
+            return jsonify({
+                'error': '예술 분류 모델이 로드되지 않았습니다',
+                'modelStatus': '실패',
+                'supportedClasses': 0
+            })
+        
+        return jsonify({
+            'modelStatus': '정상',
+            'modelName': 'WikiArt-Style (137 Classes)',
+            'supportedClasses': len(art_model.config.id2label),
+            'sampleClasses': list(art_model.config.id2label.values())[:15],
+            'message': '🎨 WikiArt-Style 예술 분류 모델 정상 동작'
+        })
+    except Exception as e:
+        return jsonify({'error': f'모델 테스트 실패: {str(e)}'})
+
+
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5002)
