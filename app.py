@@ -53,13 +53,12 @@ def classify_with_art_model(image_tensor):
             outputs = art_model(**inputs)
             predictions = F.softmax(outputs.logits, dim=-1)
             
-        # ✅ 이 부분을 수정
-        predicted_idx = predictions.argmax()  # .item() 제거
-        confidence = predictions.max()        # .item() 제거
+        predicted_idx = predictions.argmax()  
+        confidence = predictions.max()       
         predicted_class = art_classes.get(predicted_idx.item(), "Unknown_Style")
         
-        # ✅ 명시적으로 float 변환
         return predicted_class, float(confidence), int(predicted_idx)
+    
     except Exception as e:
         print(f"❌ 예술 분류 실패: {e}")
         return "Post-Impressionism", 0.75, 0
@@ -111,9 +110,9 @@ def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4):
         eps = base_epsilon
         sigma = base_sigma
     
-    # ✅ 예술 모델로 FGSM 공격
+    # FGSM 공격
     try:
-        # 예술 모델로 gradient 계산
+        # gradient 계산
         image_pil = transforms.ToPILImage()(image_tensor.squeeze().clamp(0, 1))
         inputs = art_processor(images=image_pil, return_tensors="pt")
         inputs['pixel_values'].requires_grad_(True)
@@ -131,7 +130,7 @@ def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4):
             if perturbation.shape != image_tensor.shape:
                 perturbation = F.interpolate(perturbation, size=image_tensor.shape[2:], mode='bilinear')
             adv_image = image_tensor + perturbation
-            print(f"✅ 예술 모델 gradient 기반 FGSM 적용!")
+            print(f"gradient 기반 FGSM 적용!")
         else:
             raise Exception("Gradient 계산 실패")
             
@@ -148,7 +147,7 @@ def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4):
     adv_blur_np = np.stack([gaussian_filter(c, sigma=sigma) for c in adv_np])
     adv_blur = torch.from_numpy(adv_blur_np).unsqueeze(0)
 
-    # ✅ 적대적 예술 분류
+    # 적대적 예술 분류
     adversarial_class, adversarial_conf, adversarial_pred = classify_with_art_model(adv_blur)
     
     attack_success = original_pred != adversarial_pred
@@ -162,12 +161,12 @@ def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4):
     return {
         'original_class': original_class,
         'adversarial_class': adversarial_class,
-        'original_conf': conf,
-        'adversarial_conf': adversarial_conf,
-        'attack_success': attack_success,
-        'confidence_drop': confidence_drop,
-        'epsilon_used': eps,
-        'sigma_used': sigma,
+        'original_conf': float(conf),
+        'adversarial_conf': float(adversarial_conf),
+        'attack_success': bool(attack_success),
+        'confidence_drop': float(confidence_drop),
+        'epsilon_used': float(eps),
+        'sigma_used': float(sigma),
         'original_image': image_tensor.squeeze(0).detach(),
         'adversarial_image': adv_blur.squeeze(0).detach()
     }
@@ -178,14 +177,27 @@ def allowed_file(filename):
             filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def tensor_to_base64(tensor):
-    img_np = tensor.permute(1, 2, 0).cpu().numpy()
-    img_np = np.clip(img_np * 255, 0, 255).astype(np.uint8)
-    img = Image.fromarray(img_np)
-    
-    buffer = io.BytesIO()
-    img.save(buffer, format='PNG')
-    img_str = base64.b64encode(buffer.getvalue()).decode()
-    return f"data:image/png;base64,{img_str}"
+    try:
+        # 텐서를 numpy로 변환
+        img_np = tensor.permute(1, 2, 0).cpu().numpy()
+        img_np = np.clip(img_np * 255, 0, 255).astype(np.uint8)
+        
+        # PIL 이미지로 변환
+        img = Image.fromarray(img_np)
+        
+        # 메모리 버퍼에 PNG로 저장
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG')
+        
+        # Base64 인코딩
+        img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        
+        # 표준 Data URL 형식으로 반환 (S3 URL 아님)
+        return f"data:image/png;base64,{img_str}"
+        
+    except Exception as e:
+        print(f"❌ Base64 변환 실패: {e}")
+        return None
 
 @app.route('/')
 def index():
@@ -193,50 +205,58 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
+    """파일 업로드 및 적대적 노이즈 생성"""
     try:
         if 'file' not in request.files:
-            return jsonify({'error': '파일이 없습니다'})
+            return jsonify({'error': '파일이 없습니다'}), 400
         
         file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': '파일을 선택해주세요'})
         
-        if not allowed_file(file.filename):
-            return jsonify({'error': '지원하지 않는 파일 형식입니다'})
+        if file.filename == '' or not allowed_file(file.filename):
+            return jsonify({'error': '유효하지 않은 파일입니다'}), 400
         
         # 이미지 처리
         img = Image.open(file.stream).convert('RGB')
         img_tensor = flexible_resize_transform(img)
+        
+        # FGSM 적대적 공격 수행
         result = fgsm_attack_with_blur(img_tensor)
         
+        # Base64 변환
+        original_base64 = tensor_to_base64(result['original_image'])
+        processed_base64 = tensor_to_base64(result['adversarial_image'])
+        
+        if not original_base64 or not processed_base64:
+            return jsonify({'error': 'Base64 변환 실패'}), 500
+        
+        # ✅ 백엔드 NoiseFlaskResponseDTO와 정확히 일치하는 필드명 사용
         return jsonify({
-            'originalFilePath': tensor_to_base64(result['original_image']),
-            'processedFilePath': tensor_to_base64(result['adversarial_image']),
-            'epsilon': float(result.get('epsilon_used', 0.03)),
-            
-            # 추가 정보
-            'attackSuccess': result.get('attack_success', False),
-            'originalPrediction': result.get('original_class', 'Unknown'),
-            'adversarialPrediction': result.get('adversarial_class', 'Unknown'),
-            'originalConfidence': f"{result.get('original_conf', 0):.3f}",
-            'adversarialConfidence': f"{result.get('adversarial_conf', 0):.3f}",
-            'confidenceDrop': f"{result.get('confidence_drop', 0)*100:.1f}%",
-            'message': '설정 완료'
+            'originalFilePath': original_base64,           
+            'processedFilePath': processed_base64,         
+            'epsilon': float(result['epsilon_used']),      
+            'attackSuccess': bool(result['attack_success']), 
+            'originalPrediction': str(result['original_class']), 
+            'adversarialPrediction': str(result['adversarial_class']), 
+            'originalConfidence': f"{result['original_conf']:.3f}", 
+            'adversarialConfidence': f"{result['adversarial_conf']:.3f}", 
+            'confidenceDrop': f"{result['confidence_drop']*100:.1f}%", 
+            'message': '적대적 노이즈 생성 완료'          
         })
         
     except Exception as e:
-        return jsonify({'error': f'처리 중 오류: {str(e)}'})
+        print(f"❌ Flask 오류: {e}")
+        return jsonify({'error': f'처리 중 오류: {str(e)}'}), 500
+
 
 @app.route('/test-art-model', methods=['GET'])
 def test_art_model():
-    """예술 분류 모델 테스트"""
     try:
         if not art_model:
             return jsonify({
                 'error': '예술 분류 모델이 로드되지 않았습니다',
                 'modelStatus': '실패',
                 'supportedClasses': 0
-            })
+            }), 500
         
         return jsonify({
             'modelStatus': '정상',
@@ -245,8 +265,9 @@ def test_art_model():
             'sampleClasses': list(art_model.config.id2label.values())[:15],
             'message': '🎨 WikiArt-Style 예술 분류 모델 정상 동작'
         })
+        
     except Exception as e:
-        return jsonify({'error': f'모델 테스트 실패: {str(e)}'})
+        return jsonify({'error': f'모델 테스트 실패: {str(e)}'}), 500
 
 
 if __name__ == '__main__':
