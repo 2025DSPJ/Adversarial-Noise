@@ -91,24 +91,42 @@ def flexible_resize_transform(image, max_size=224):
     
     return torch.from_numpy(img_np)
 
-def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4):
+def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4, mode='auto', level=2):
     image_tensor = image_tensor.clone().unsqueeze(0).requires_grad_(True)
     
     original_class, conf, original_pred = classify_with_art_model(image_tensor)
     
-    # 적응적 엡실론 조정 
-    if conf > 0.99:
-        eps = base_epsilon * 4.0
-        sigma = base_sigma * 0.3
-    elif conf > 0.95:
-        eps = base_epsilon * 2.5
-        sigma = base_sigma * 0.5
-    elif conf > 0.9:
-        eps = base_epsilon * 1.5
-        sigma = base_sigma
-    else:
-        eps = base_epsilon
-        sigma = base_sigma
+    # 모드별 epsilon 결정
+    if mode == 'precision':
+        # 정밀 모드: 자동 모드의 각 단계와 동일한 epsilon 사용
+        epsilon_levels = {
+            1: base_epsilon,        # 기본 (1.0배)
+            2: base_epsilon * 1.5,  # 중간 (1.5배)
+            3: base_epsilon * 2.5,  # 강함 (2.5배)
+            4: base_epsilon * 4.0   # 매우 강함 (4.0배)
+        }
+        eps = epsilon_levels.get(level, base_epsilon)
+        sigma = base_sigma  # 고정
+        auto_reason = None
+        
+    else:  # mode == 'auto'
+        # 자동 모드: 신뢰도 기반 조정 (기존 로직)
+        if conf > 0.99:
+            eps = base_epsilon * 4.0
+            sigma = base_sigma * 0.3
+            auto_reason = "very_high_confidence"
+        elif conf > 0.95:
+            eps = base_epsilon * 2.5
+            sigma = base_sigma * 0.5
+            auto_reason = "high_confidence"
+        elif conf > 0.9:
+            eps = base_epsilon * 1.5
+            sigma = base_sigma
+            auto_reason = "medium_confidence"
+        else:
+            eps = base_epsilon
+            sigma = base_sigma
+            auto_reason = "low_confidence"
     
     # FGSM 공격
     try:
@@ -168,7 +186,9 @@ def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4):
         'epsilon_used': float(eps),
         'sigma_used': float(sigma),
         'original_image': image_tensor.squeeze(0).detach(),
-        'adversarial_image': adv_blur.squeeze(0).detach()
+        'adversarial_image': adv_blur.squeeze(0).detach(),
+        'mode': mode,
+        'level': level if mode == 'precision' else None
     }
 
 def allowed_file(filename):
@@ -215,12 +235,28 @@ def upload_file():
         if file.filename == '' or not allowed_file(file.filename):
             return jsonify({'error': '유효하지 않은 파일입니다'}), 400
         
+        # 모드 파라미터 추가
+        mode = request.form.get('mode', 'auto')  # 기본값: auto
+        level = int(request.form.get('level', 2))  # 기본값: 2단계
+
+        # 🔍 디버깅 로그 추가
+        print(f"🔍 받은 파라미터 - mode: {mode}, level: {level}")
+        print(f"🔍 전체 form 데이터: {request.form}")
+
+        # 파라미터 검증
+        if mode not in ['auto', 'precision']:
+            return jsonify({'error': '유효하지 않은 모드입니다. (auto/precision)'}), 400
+            
+        if mode == 'precision' and level not in [1, 2, 3, 4]:
+            return jsonify({'error': '강도 단계는 1-4 사이여야 합니다.'}), 400
+
+        
         # 이미지 처리
         img = Image.open(file.stream).convert('RGB')
         img_tensor = flexible_resize_transform(img)
         
-        # FGSM 적대적 공격 수행
-        result = fgsm_attack_with_blur(img_tensor)
+        # 모드별 FGSM 공격 수행
+        result = fgsm_attack_with_blur(img_tensor, mode=mode, level=level)
         
         # Base64 변환
         original_base64 = tensor_to_base64(result['original_image'])
@@ -229,7 +265,6 @@ def upload_file():
         if not original_base64 or not processed_base64:
             return jsonify({'error': 'Base64 변환 실패'}), 500
         
-        # ✅ 백엔드 NoiseFlaskResponseDTO와 정확히 일치하는 필드명 사용
         return jsonify({
             'originalFilePath': original_base64,           
             'processedFilePath': processed_base64,         
@@ -240,7 +275,9 @@ def upload_file():
             'originalConfidence': f"{result['original_conf']:.3f}", 
             'adversarialConfidence': f"{result['adversarial_conf']:.3f}", 
             'confidenceDrop': f"{result['confidence_drop']*100:.1f}%", 
-            'message': '적대적 노이즈 생성 완료'          
+            'mode': result['mode'],
+            'level': result['level'],
+            'message': '적대적 노이즈 삽입 이미지 생성 완료'          
         })
         
     except Exception as e:
