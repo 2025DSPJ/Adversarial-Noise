@@ -26,6 +26,8 @@ CORS(app, origins=[
     "http://127.0.0.1:5173"
 ])
 
+SPRING_SERVER_URL = 'http://localhost:8080/progress'
+
 # 모델 로드
 print("🎨 WikiArt-Style 예술 분류 모델 로딩 중...")
 art_processor = AutoImageProcessor.from_pretrained("prithivMLmods/WikiArt-Style")
@@ -218,6 +220,27 @@ def tensor_to_base64(tensor):
     except Exception as e:
         print(f"❌ Base64 변환 실패: {e}")
         return None
+    
+def send_progress(task_id, progress):
+    if not task_id:
+        return
+        
+    try:
+        payload = {
+            "taskId": task_id,
+            "progress": progress
+        }
+        
+        response = requests.post(
+            SPRING_SERVER_URL, 
+            json=payload,
+            headers={'Content-Type': 'application/json'},
+            timeout=5  # 5초 타임아웃
+        )
+        print(f"📡 진행률 전송: {progress}%")
+    except Exception as e:
+        print(f"[WARN] 진행률 전송 실패: {e}")
+
 
 @app.route('/')
 def index():
@@ -225,63 +248,79 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    """파일 업로드 및 적대적 노이즈 생성"""
     try:
+        # taskId 파라미터 추가
+        task_id = request.form.get('taskId')
+        
+        # 기본 검증
         if 'file' not in request.files:
             return jsonify({'error': '파일이 없습니다'}), 400
-        
+            
         file = request.files['file']
-        
         if file.filename == '' or not allowed_file(file.filename):
             return jsonify({'error': '유효하지 않은 파일입니다'}), 400
+
+        # 5% - 시작
+        send_progress(task_id, 5)
+
+        # 모드 파라미터 처리
+        mode = request.form.get('mode', 'auto')
+        level = int(request.form.get('level', 2))
         
-        # 모드 파라미터 추가
-        mode = request.form.get('mode', 'auto')  # 기본값: auto
-        level = int(request.form.get('level', 2))  # 기본값: 2단계
-
-        # 🔍 디버깅 로그 추가
-        print(f"🔍 받은 파라미터 - mode: {mode}, level: {level}")
-        print(f"🔍 전체 form 데이터: {request.form}")
-
         # 파라미터 검증
         if mode not in ['auto', 'precision']:
             return jsonify({'error': '유효하지 않은 모드입니다. (auto/precision)'}), 400
-            
         if mode == 'precision' and level not in [1, 2, 3, 4]:
             return jsonify({'error': '강도 단계는 1-4 사이여야 합니다.'}), 400
 
-        
-        # 이미지 처리
+        # 15% - 이미지 로딩 및 전처리
+        send_progress(task_id, 15)
         img = Image.open(file.stream).convert('RGB')
         img_tensor = flexible_resize_transform(img)
+
+        # 30% - 모델 준비 및 원본 분류
+        send_progress(task_id, 30)
         
-        # 모드별 FGSM 공격 수행
+        # 60% - FGSM 적대적 노이즈 생성
+        send_progress(task_id, 60)
         result = fgsm_attack_with_blur(img_tensor, mode=mode, level=level)
-        
-        # Base64 변환
+
+        # 80% - 이미지 후처리 및 Base64 변환
+        send_progress(task_id, 80)
         original_base64 = tensor_to_base64(result['original_image'])
         processed_base64 = tensor_to_base64(result['adversarial_image'])
-        
+
         if not original_base64 or not processed_base64:
             return jsonify({'error': 'Base64 변환 실패'}), 500
-        
-        return jsonify({
-            'originalFilePath': original_base64,           
-            'processedFilePath': processed_base64,         
-            'epsilon': float(result['epsilon_used']),      
-            'attackSuccess': bool(result['attack_success']), 
-            'originalPrediction': str(result['original_class']), 
-            'adversarialPrediction': str(result['adversarial_class']), 
-            'originalConfidence': f"{result['original_conf']:.3f}", 
-            'adversarialConfidence': f"{result['adversarial_conf']:.3f}", 
-            'confidenceDrop': f"{result['confidence_drop']*100:.1f}%", 
+
+        # 95% - 결과 준비
+        send_progress(task_id, 95)
+
+        # 응답 데이터 준비
+        response_data = {
+            'originalFilePath': original_base64,
+            'processedFilePath': processed_base64,
+            'epsilon': float(result['epsilon_used']),
+            'attackSuccess': bool(result['attack_success']),
+            'originalPrediction': str(result['original_class']),
+            'adversarialPrediction': str(result['adversarial_class']),
+            'originalConfidence': f"{result['original_conf']:.3f}",
+            'adversarialConfidence': f"{result['adversarial_conf']:.3f}",
+            'confidenceDrop': f"{result['confidence_drop']*100:.1f}%",
             'mode': result['mode'],
             'level': result['level'],
-            'message': '적대적 노이즈 삽입 이미지 생성 완료'          
-        })
-        
+            'message': '적대적 노이즈 삽입 이미지 생성 완료'
+        }
+
+        # 100% - 완료
+        send_progress(task_id, 100)
+
+        return jsonify(response_data)
+
     except Exception as e:
-        print(f"❌ Flask 오류: {e}")
+        # 에러 시에도 진행률 전송
+        send_progress(task_id, -1, f"처리 중 오류 발생: {str(e)}")
+        print(f"[WARN] Flask 오류: {e}")
         return jsonify({'error': f'처리 중 오류: {str(e)}'}), 500
 
 
