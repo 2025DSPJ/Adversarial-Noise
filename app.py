@@ -298,6 +298,7 @@ def upload_file():
 
         # 응답 데이터 준비
         response_data = {
+            'taskId': task_id,
             'originalFilePath': original_base64,
             'processedFilePath': processed_base64,
             'epsilon': float(result['epsilon_used']),
