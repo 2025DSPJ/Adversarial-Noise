@@ -29,21 +29,21 @@ CORS(app, origins=[
 SPRING_SERVER_URL = 'http://localhost:8080/progress'
 
 # 모델 로드
-print("🎨 WikiArt-Style 예술 분류 모델 로딩 중...")
+print("[INFO] WikiArt-Style 예술 분류 모델 로딩 중...")
 art_processor = AutoImageProcessor.from_pretrained("prithivMLmods/WikiArt-Style")
 art_model = AutoModelForImageClassification.from_pretrained("prithivMLmods/WikiArt-Style")
-print("✅ WikiArt-Style 모델 로드 완료! (137개 예술 스타일 지원)")
+print("[INFO] WikiArt-Style 모델 로드 완료!")
 
+# 예술 분류 클래스 반환
 def get_art_classes():
-    """예술 분류 클래스 반환"""
     if art_model:
         return art_model.config.id2label
     return {}
 
 art_classes = get_art_classes()
 
+# WikiArt-Style 모델로 예술 분류
 def classify_with_art_model(image_tensor):
-    """WikiArt-Style 모델로 예술 분류"""
     try:
         if len(image_tensor.shape) == 4:
             image_tensor = image_tensor.squeeze(0)
@@ -62,7 +62,7 @@ def classify_with_art_model(image_tensor):
         return predicted_class, float(confidence), int(predicted_idx)
     
     except Exception as e:
-        print(f"❌ 예술 분류 실패: {e}")
+        print(f"[ERROR] 예술 분류 실패: {e}")
         return "Post-Impressionism", 0.75, 0
 
 def flexible_resize_transform(image, max_size=224):
@@ -150,12 +150,12 @@ def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4, mode
             if perturbation.shape != image_tensor.shape:
                 perturbation = F.interpolate(perturbation, size=image_tensor.shape[2:], mode='bilinear')
             adv_image = image_tensor + perturbation
-            print(f"gradient 기반 FGSM 적용!")
+            print("[DEBUG] Gradient 기반 FGSM 적용")
         else:
             raise Exception("Gradient 계산 실패")
             
     except Exception as e:
-        print(f"⚠️ 예술 모델 gradient 실패, fallback 사용: {e}")
+        print(f"[WARN] 예술 모델 gradient 실패, fallback 사용: {e}")
         # 기존 방식으로 fallback
         perturbation = eps * torch.randn_like(image_tensor)
         adv_image = image_tensor + perturbation
@@ -174,9 +174,9 @@ def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4, mode
     confidence_drop = conf - adversarial_conf
     
     # 로그 출력
-    print(f"🎨 원본: {original_class} ({conf:.3f})")
-    print(f"🎯 공격후: {adversarial_class} ({adversarial_conf:.3f})")
-    print(f"📊 성공: {attack_success}, 신뢰도 변화: {confidence_drop:.3f}")
+    print(f"[DEBUG] 원본 분류: {original_class} (신뢰도: {conf:.3f})")
+    print(f"[DEBUG] 적대적 분류: {adversarial_class} (신뢰도: {adversarial_conf:.3f})")
+    print(f"[INFO] 공격 성공: {attack_success}, 신뢰도 변화: {confidence_drop:.3f}")
 
     return {
         'original_class': original_class,
@@ -218,7 +218,7 @@ def tensor_to_base64(tensor):
         return f"data:image/png;base64,{img_str}"
         
     except Exception as e:
-        print(f"❌ Base64 변환 실패: {e}")
+        print(f"[ERROR] Base64 변환 실패: {e}")
         return None
     
 def send_progress(task_id, progress):
@@ -237,7 +237,7 @@ def send_progress(task_id, progress):
             headers={'Content-Type': 'application/json'},
             timeout=5  # 5초 타임아웃
         )
-        print(f"📡 진행률 전송: {progress}%")
+        print(f"[DEBUG] 진행률 전송: {progress}%")
     except Exception as e:
         print(f"[WARN] 진행률 전송 실패: {e}")
 
@@ -340,7 +340,7 @@ def test_art_model():
             'modelName': 'WikiArt-Style (137 Classes)',
             'supportedClasses': len(art_model.config.id2label),
             'sampleClasses': list(art_model.config.id2label.values())[:15],
-            'message': '🎨 WikiArt-Style 예술 분류 모델 정상 동작'
+            'message': 'WikiArt-Style 예술 분류 모델 정상 동작'
         })
         
     except Exception as e:
