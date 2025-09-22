@@ -62,8 +62,8 @@ def classify_with_art_model(image_tensor):
         return predicted_class, float(confidence), int(predicted_idx)
     
     except Exception as e:
-        print(f"[ERROR] 예술 분류 실패: {e}")
-        return "Post-Impressionism", 0.75, 0
+        print(f"[ERROR] 이미지 분류 실패: {e}")
+        return None, None, None
 
 def flexible_resize_transform(image, max_size=224):
     original_size = image.size
@@ -96,7 +96,10 @@ def flexible_resize_transform(image, max_size=224):
 def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4, mode='auto', level=2):
     image_tensor = image_tensor.clone().unsqueeze(0).requires_grad_(True)
     
-    original_class, conf, original_pred = classify_with_art_model(image_tensor)
+    result = classify_with_art_model(image_tensor)
+    if result[0] is None:  # 분류 실패 시
+        raise ValueError("원본 이미지 분류에 실패했습니다.")
+    original_class, conf, original_pred = result
     
     # 모드별 epsilon 결정
     if mode == 'precision':
@@ -167,9 +170,11 @@ def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4, mode
     adv_blur_np = np.stack([gaussian_filter(c, sigma=sigma) for c in adv_np])
     adv_blur = torch.from_numpy(adv_blur_np).unsqueeze(0)
 
-    # 적대적 예술 분류
-    adversarial_class, adversarial_conf, adversarial_pred = classify_with_art_model(adv_blur)
-    
+    adv_result = classify_with_art_model(adv_blur)
+    if adv_result[0] is None:  # 분류 실패 시
+        raise ValueError("노이즈 삽입 이미지 분류에 실패했습니다.")
+    adversarial_class, adversarial_conf, adversarial_pred = adv_result
+        
     attack_success = original_pred != adversarial_pred
     confidence_drop = conf - adversarial_conf
     
