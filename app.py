@@ -13,6 +13,7 @@ import io
 import os
 import requests
 import json
+import uuid
 
 app = Flask(__name__)
 
@@ -226,23 +227,24 @@ def tensor_to_base64(tensor):
         print(f"[ERROR] Base64 변환 실패: {e}")
         return None
     
-def send_progress(task_id, progress):
+def send_progress(task_id, login_id, progress):
     if not task_id:
         return
-        
     try:
         payload = {
             "taskId": task_id,
+            "loginId": login_id,
             "progress": progress
         }
+        headers = {'Content-Type': 'application/json'}
         
-        response = requests.post(
-            SPRING_SERVER_URL, 
-            json=payload,
-            headers={'Content-Type': 'application/json'},
-            timeout=5  # 5초 타임아웃
-        )
-        print(f"[DEBUG] 진행률 전송: {progress}%")
+        response = requests.post(SPRING_SERVER_URL, json=payload, headers=headers, timeout=5)
+        
+        if response.status_code == 200:
+            print(f"[DEBUG] 진행률 전송 성공: {progress}%")
+        else:
+            print(f"[ERROR] Spring Boot 응답 실패: {response.status_code}")
+            
     except Exception as e:
         print(f"[WARN] 진행률 전송 실패: {e}")
 
@@ -255,7 +257,11 @@ def index():
 def upload_file():
     try:
         # taskId 파라미터 추가
-        task_id = request.form.get('taskId')
+        task_id = request.form.get('taskId') or str(uuid.uuid4())
+        print(f"[INFO] taskId={task_id}")
+
+        login_id = request.form.get('loginId')
+        print(f"[INFO] loginId={login_id}")
         
         # 기본 검증
         if 'file' not in request.files:
@@ -266,7 +272,7 @@ def upload_file():
             return jsonify({'error': '유효하지 않은 파일입니다'}), 400
 
         # 5% - 시작
-        send_progress(task_id, 5)
+        send_progress(task_id, login_id, 5)
 
         # 모드 파라미터 처리
         mode = request.form.get('mode', 'auto')
@@ -279,19 +285,19 @@ def upload_file():
             return jsonify({'error': '강도 단계는 1-4 사이여야 합니다.'}), 400
 
         # 15% - 이미지 로딩 및 전처리
-        send_progress(task_id, 15)
+        send_progress(task_id, login_id, 15)
         img = Image.open(file.stream).convert('RGB')
         img_tensor = flexible_resize_transform(img)
 
         # 30% - 모델 준비 및 원본 분류
-        send_progress(task_id, 30)
+        send_progress(task_id, login_id, 30)
         
         # 60% - FGSM 적대적 노이즈 생성
-        send_progress(task_id, 60)
+        send_progress(task_id, login_id, 60)
         result = fgsm_attack_with_blur(img_tensor, mode=mode, level=level)
 
         # 80% - 이미지 후처리 및 Base64 변환
-        send_progress(task_id, 80)
+        send_progress(task_id, login_id, 80)
         original_base64 = tensor_to_base64(result['original_image'])
         processed_base64 = tensor_to_base64(result['adversarial_image'])
 
@@ -299,7 +305,7 @@ def upload_file():
             return jsonify({'error': 'Base64 변환 실패'}), 500
 
         # 95% - 결과 준비
-        send_progress(task_id, 95)
+        send_progress(task_id, login_id, 95)
 
         # 응답 데이터 준비
         response_data = {
@@ -319,13 +325,13 @@ def upload_file():
         }
 
         # 100% - 완료
-        send_progress(task_id, 100)
+        send_progress(task_id, login_id, 100)
 
         return jsonify(response_data)
 
     except Exception as e:
         # 에러 시에도 진행률 전송
-        send_progress(task_id, -1, f"처리 중 오류 발생: {str(e)}")
+        send_progress(task_id, login_id, -1, f"처리 중 오류 발생: {str(e)}")
         print(f"[WARN] Flask 오류: {e}")
         return jsonify({'error': f'처리 중 오류: {str(e)}'}), 500
 
