@@ -251,7 +251,26 @@ def send_progress(task_id, login_id, progress):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return {
+        "service": "Adversarial Noise AI Server",
+        "version": "1.0.0",
+        "status": "running",
+        "endpoints": {
+            "/upload": "POST - 적대적 노이즈 이미지 처리 (파일, taskId, loginId, mode, level)",
+            "/test-art-model": "GET - WikiArt-Style 모델 상태 확인",
+            "/": "GET - API 서버 정보 및 엔드포인트 목록"
+        },
+        "parameters": {
+            "upload": {
+                "file": "업로드할 이미지 파일 (필수)",
+                "taskId": "작업 식별자 (선택, 자동 생성)",
+                "loginId": "사용자 식별자 (선택)",
+                "mode": "처리 모드 - auto/precision (기본: auto)",
+                "level": "강도 단계 1-4 (precision 모드시, 기본: 2)"
+            }
+        }
+    }
+
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
