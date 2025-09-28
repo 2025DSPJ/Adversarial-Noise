@@ -13,6 +13,7 @@ import io
 import os
 import requests
 import json
+import uuid
 
 app = Flask(__name__)
 
@@ -26,22 +27,24 @@ CORS(app, origins=[
     "http://127.0.0.1:5173"
 ])
 
+SPRING_SERVER_URL = 'http://localhost:8080/progress'
+
 # 모델 로드
-print("🎨 WikiArt-Style 예술 분류 모델 로딩 중...")
+print("[INFO] WikiArt-Style 예술 분류 모델 로딩 중...")
 art_processor = AutoImageProcessor.from_pretrained("prithivMLmods/WikiArt-Style")
 art_model = AutoModelForImageClassification.from_pretrained("prithivMLmods/WikiArt-Style")
-print("✅ WikiArt-Style 모델 로드 완료! (137개 예술 스타일 지원)")
+print("[INFO] WikiArt-Style 모델 로드 완료!")
 
+# 예술 분류 클래스 반환
 def get_art_classes():
-    """예술 분류 클래스 반환"""
     if art_model:
         return art_model.config.id2label
     return {}
 
 art_classes = get_art_classes()
 
+# WikiArt-Style 모델로 예술 분류
 def classify_with_art_model(image_tensor):
-    """WikiArt-Style 모델로 예술 분류"""
     try:
         if len(image_tensor.shape) == 4:
             image_tensor = image_tensor.squeeze(0)
@@ -60,8 +63,8 @@ def classify_with_art_model(image_tensor):
         return predicted_class, float(confidence), int(predicted_idx)
     
     except Exception as e:
-        print(f"❌ 예술 분류 실패: {e}")
-        return "Post-Impressionism", 0.75, 0
+        print(f"[ERROR] 이미지 분류 실패: {e}")
+        return None, None, None
 
 def flexible_resize_transform(image, max_size=224):
     original_size = image.size
@@ -94,7 +97,10 @@ def flexible_resize_transform(image, max_size=224):
 def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4, mode='auto', level=2):
     image_tensor = image_tensor.clone().unsqueeze(0).requires_grad_(True)
     
-    original_class, conf, original_pred = classify_with_art_model(image_tensor)
+    result = classify_with_art_model(image_tensor)
+    if result[0] is None:  # 분류 실패 시
+        raise ValueError("원본 이미지 분류에 실패했습니다.")
+    original_class, conf, original_pred = result
     
     # 모드별 epsilon 결정
     if mode == 'precision':
@@ -148,12 +154,12 @@ def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4, mode
             if perturbation.shape != image_tensor.shape:
                 perturbation = F.interpolate(perturbation, size=image_tensor.shape[2:], mode='bilinear')
             adv_image = image_tensor + perturbation
-            print(f"gradient 기반 FGSM 적용!")
+            print("[DEBUG] Gradient 기반 FGSM 적용")
         else:
             raise Exception("Gradient 계산 실패")
             
     except Exception as e:
-        print(f"⚠️ 예술 모델 gradient 실패, fallback 사용: {e}")
+        print(f"[WARN] 예술 모델 gradient 실패, fallback 사용: {e}")
         # 기존 방식으로 fallback
         perturbation = eps * torch.randn_like(image_tensor)
         adv_image = image_tensor + perturbation
@@ -165,16 +171,18 @@ def fgsm_attack_with_blur(image_tensor, base_epsilon=0.015, base_sigma=0.4, mode
     adv_blur_np = np.stack([gaussian_filter(c, sigma=sigma) for c in adv_np])
     adv_blur = torch.from_numpy(adv_blur_np).unsqueeze(0)
 
-    # 적대적 예술 분류
-    adversarial_class, adversarial_conf, adversarial_pred = classify_with_art_model(adv_blur)
-    
+    adv_result = classify_with_art_model(adv_blur)
+    if adv_result[0] is None:  # 분류 실패 시
+        raise ValueError("노이즈 삽입 이미지 분류에 실패했습니다.")
+    adversarial_class, adversarial_conf, adversarial_pred = adv_result
+        
     attack_success = original_pred != adversarial_pred
     confidence_drop = conf - adversarial_conf
     
     # 로그 출력
-    print(f"🎨 원본: {original_class} ({conf:.3f})")
-    print(f"🎯 공격후: {adversarial_class} ({adversarial_conf:.3f})")
-    print(f"📊 성공: {attack_success}, 신뢰도 변화: {confidence_drop:.3f}")
+    print(f"[DEBUG] 원본 분류: {original_class} (신뢰도: {conf:.3f})")
+    print(f"[DEBUG] 적대적 분류: {adversarial_class} (신뢰도: {adversarial_conf:.3f})")
+    print(f"[INFO] 공격 성공: {attack_success}, 신뢰도 변화: {confidence_drop:.3f}")
 
     return {
         'original_class': original_class,
@@ -216,72 +224,134 @@ def tensor_to_base64(tensor):
         return f"data:image/png;base64,{img_str}"
         
     except Exception as e:
-        print(f"❌ Base64 변환 실패: {e}")
+        print(f"[ERROR] Base64 변환 실패: {e}")
         return None
+    
+def send_progress(task_id, login_id, progress):
+    if not task_id:
+        return
+    try:
+        payload = {
+            "taskId": task_id,
+            "loginId": login_id,
+            "progress": progress
+        }
+        headers = {'Content-Type': 'application/json'}
+        
+        response = requests.post(SPRING_SERVER_URL, json=payload, headers=headers, timeout=5)
+        
+        if response.status_code == 200:
+            print(f"[DEBUG] 진행률 전송 성공: {progress}%")
+        else:
+            print(f"[ERROR] Spring Boot 응답 실패: {response.status_code}")
+            
+    except Exception as e:
+        print(f"[WARN] 진행률 전송 실패: {e}")
+
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return {
+        "service": "Adversarial Noise AI Server",
+        "version": "1.0.0",
+        "status": "running",
+        "endpoints": {
+            "/upload": "POST - 적대적 노이즈 이미지 처리 (파일, taskId, loginId, mode, level)",
+            "/test-art-model": "GET - WikiArt-Style 모델 상태 확인",
+            "/": "GET - API 서버 정보 및 엔드포인트 목록"
+        },
+        "parameters": {
+            "upload": {
+                "file": "업로드할 이미지 파일 (필수)",
+                "taskId": "작업 식별자 (선택, 자동 생성)",
+                "loginId": "사용자 식별자 (선택)",
+                "mode": "처리 모드 - auto/precision (기본: auto)",
+                "level": "강도 단계 1-4 (precision 모드시, 기본: 2)"
+            }
+        }
+    }
+
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    """파일 업로드 및 적대적 노이즈 생성"""
     try:
+        # taskId 파라미터 추가
+        task_id = request.form.get('taskId') or str(uuid.uuid4())
+        print(f"[INFO] taskId={task_id}")
+
+        login_id = request.form.get('loginId')
+        print(f"[INFO] loginId={login_id}")
+        
+        # 기본 검증
         if 'file' not in request.files:
             return jsonify({'error': '파일이 없습니다'}), 400
-        
+            
         file = request.files['file']
-        
         if file.filename == '' or not allowed_file(file.filename):
             return jsonify({'error': '유효하지 않은 파일입니다'}), 400
+
+        # 5% - 시작
+        send_progress(task_id, login_id, 5)
+
+        # 모드 파라미터 처리
+        mode = request.form.get('mode', 'auto')
+        level = int(request.form.get('level', 2))
         
-        # 모드 파라미터 추가
-        mode = request.form.get('mode', 'auto')  # 기본값: auto
-        level = int(request.form.get('level', 2))  # 기본값: 2단계
-
-        # 🔍 디버깅 로그 추가
-        print(f"🔍 받은 파라미터 - mode: {mode}, level: {level}")
-        print(f"🔍 전체 form 데이터: {request.form}")
-
         # 파라미터 검증
         if mode not in ['auto', 'precision']:
             return jsonify({'error': '유효하지 않은 모드입니다. (auto/precision)'}), 400
-            
         if mode == 'precision' and level not in [1, 2, 3, 4]:
             return jsonify({'error': '강도 단계는 1-4 사이여야 합니다.'}), 400
 
-        
-        # 이미지 처리
+        # 15% - 이미지 로딩 및 전처리
+        send_progress(task_id, login_id, 15)
         img = Image.open(file.stream).convert('RGB')
         img_tensor = flexible_resize_transform(img)
+
+        # 30% - 모델 준비 및 원본 분류
+        send_progress(task_id, login_id, 30)
         
-        # 모드별 FGSM 공격 수행
+        # 60% - FGSM 적대적 노이즈 생성
+        send_progress(task_id, login_id, 60)
         result = fgsm_attack_with_blur(img_tensor, mode=mode, level=level)
-        
-        # Base64 변환
+
+        # 80% - 이미지 후처리 및 Base64 변환
+        send_progress(task_id, login_id, 80)
         original_base64 = tensor_to_base64(result['original_image'])
         processed_base64 = tensor_to_base64(result['adversarial_image'])
-        
+
         if not original_base64 or not processed_base64:
             return jsonify({'error': 'Base64 변환 실패'}), 500
-        
-        return jsonify({
-            'originalFilePath': original_base64,           
-            'processedFilePath': processed_base64,         
-            'epsilon': float(result['epsilon_used']),      
-            'attackSuccess': bool(result['attack_success']), 
-            'originalPrediction': str(result['original_class']), 
-            'adversarialPrediction': str(result['adversarial_class']), 
-            'originalConfidence': f"{result['original_conf']:.3f}", 
-            'adversarialConfidence': f"{result['adversarial_conf']:.3f}", 
-            'confidenceDrop': f"{result['confidence_drop']*100:.1f}%", 
+
+        # 95% - 결과 준비
+        send_progress(task_id, login_id, 95)
+
+        # 응답 데이터 준비
+        response_data = {
+            'taskId': task_id,
+            'originalFilePath': original_base64,
+            'processedFilePath': processed_base64,
+            'epsilon': float(result['epsilon_used']),
+            'attackSuccess': bool(result['attack_success']),
+            'originalPrediction': str(result['original_class']),
+            'adversarialPrediction': str(result['adversarial_class']),
+            'originalConfidence': f"{result['original_conf']:.3f}",
+            'adversarialConfidence': f"{result['adversarial_conf']:.3f}",
+            'confidenceDrop': f"{result['confidence_drop']*100:.1f}%",
             'mode': result['mode'],
             'level': result['level'],
-            'message': '적대적 노이즈 삽입 이미지 생성 완료'          
-        })
-        
+            'message': '적대적 노이즈 삽입 이미지 생성 완료'
+        }
+
+        # 100% - 완료
+        send_progress(task_id, login_id, 100)
+
+        return jsonify(response_data)
+
     except Exception as e:
-        print(f"❌ Flask 오류: {e}")
+        # 에러 시에도 진행률 전송
+        send_progress(task_id, login_id, -1, f"처리 중 오류 발생: {str(e)}")
+        print(f"[WARN] Flask 오류: {e}")
         return jsonify({'error': f'처리 중 오류: {str(e)}'}), 500
 
 
@@ -300,7 +370,7 @@ def test_art_model():
             'modelName': 'WikiArt-Style (137 Classes)',
             'supportedClasses': len(art_model.config.id2label),
             'sampleClasses': list(art_model.config.id2label.values())[:15],
-            'message': '🎨 WikiArt-Style 예술 분류 모델 정상 동작'
+            'message': 'WikiArt-Style 예술 분류 모델 정상 동작'
         })
         
     except Exception as e:
