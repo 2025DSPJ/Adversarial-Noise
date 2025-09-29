@@ -1,0 +1,154 @@
+import os
+import pandas as pd
+from .metrics import QualityMetrics
+
+class DeepTruthQualityTester:
+    def __init__(self, base_dir):
+        self.base_dir = base_dir
+        self.test_images_dir = os.path.join(base_dir, 'static', 'test_images')
+        self.metrics = QualityMetrics()
+        self.results = []
+    
+    #테스트 대상 작품 목록
+    def get_test_artworks(self):
+        artworks = [
+            'The_Persistence_of_Memory',
+            'La_ronda_de_noche',
+            'mona_lisa',
+            'impression-Sunrise',
+            'untitled'
+        ]
+        return artworks
+    
+    # DeepTruth 레벨별 화질 테스트
+    def test_deeptruth_levels(self):
+        print("=== DeepTruth 레벨별 화질 테스트 ===")
+        artworks = self.get_test_artworks()
+        levels = ['auto', 'level1', 'level2', 'level3', 'level4']
+        
+        for artwork in artworks:
+            print(f"\n--- {artwork} ---")
+            
+            # 원본 이미지 찾기
+            original_path = None
+            for ext in ['.jpg', '.jpeg', '.png']:
+                test_path = os.path.join(self.test_images_dir, 'original', f'{artwork}{ext}')
+                if os.path.exists(test_path):
+                    original_path = test_path
+                    break
+            
+            if not original_path:
+                print(f"원본 이미지 없음: {artwork}")
+                continue
+                
+            for level in levels:
+                # 결과 이미지 찾기
+                modified_path = None
+                for ext in ['.jpg', '.jpeg', '.png']:
+                    test_path = os.path.join(
+                        self.test_images_dir, 'deeptruth_results', 
+                        level, f'{artwork}_{level}{ext}'
+                    )
+                    if os.path.exists(test_path):
+                        modified_path = test_path
+                        break
+                
+                if not modified_path:
+                    print(f"  {level}: 결과 이미지 없음")
+                    continue
+                
+                result = self.metrics.compare_images(original_path, modified_path)
+                
+                if result:
+                    self.results.append({
+                        'artwork': artwork,
+                        'method': 'DeepTruth',
+                        'level': level,
+                        'ssim': result['ssim'],
+                        'psnr': result['psnr'],
+                        'quality_grade': result['quality_grade']
+                    })
+                    
+                    print(f"  {level}: SSIM={result['ssim']}, PSNR={result['psnr']}")
+                else:
+                    print(f"  {level}: 계산 실패")
+    
+    # 기존 FGSM 비교 테스트
+    def test_baseline_fgsm(self):
+        print("\n=== 기존 FGSM 비교 테스트 ===")
+        artworks = self.get_test_artworks()
+        
+        for artwork in artworks:
+            # 원본 이미지 찾기
+            original_path = None
+            for ext in ['.jpg', '.jpeg', '.png']:
+                test_path = os.path.join(self.test_images_dir, 'original', f'{artwork}{ext}')
+                if os.path.exists(test_path):
+                    original_path = test_path
+                    break
+            
+            # FGSM 결과 찾기
+            baseline_path = None
+            for ext in ['.jpg', '.jpeg', '.png']:
+                test_path = os.path.join(
+                    self.test_images_dir, 'baseline_fgsm', f'{artwork}_fgsm{ext}'
+                )
+                if os.path.exists(test_path):
+                    baseline_path = test_path
+                    break
+            
+            if not baseline_path:
+                print(f"{artwork}: 기존 FGSM 결과 없음")
+                continue
+            
+            result = self.metrics.compare_images(original_path, baseline_path)
+            
+            if result:
+                self.results.append({
+                    'artwork': artwork,
+                    'method': 'Baseline_FGSM',
+                    'level': None,
+                    'ssim': result['ssim'],
+                    'psnr': result['psnr'],
+                    'quality_grade': result['quality_grade']
+                })
+                
+                print(f"{artwork}: SSIM={result['ssim']}, PSNR={result['psnr']}")
+    
+    # 전체 테스트 실행
+    def run_full_test(self):
+        print("DeepTruth 화질 테스트 시작...")
+        
+        # 결과 초기화
+        self.results = []
+        
+        # DeepTruth 테스트
+        self.test_deeptruth_levels()
+        
+        # 기존 FGSM 테스트
+        self.test_baseline_fgsm()
+        
+        if self.results:
+            df = pd.DataFrame(self.results)
+            
+            # 결과 저장
+            results_dir = os.path.join(self.base_dir, 'results')
+            os.makedirs(results_dir, exist_ok=True)
+            
+            csv_path = os.path.join(results_dir, 'quality_results.csv')
+            df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+            
+            print(f"\n결과 저장 완료: {csv_path}")
+            
+            # 요약 통계
+            print("\n=== 요약 통계 ===")
+            summary = df.groupby(['method', 'level']).agg({
+                'ssim': ['mean', 'std'],
+                'psnr': ['mean', 'std']
+            }).round(4)
+            print(summary)
+            
+            return df
+        else:
+            print("테스트 결과가 없습니다.")
+            return None

@@ -1,0 +1,92 @@
+import cv2
+import numpy as np
+from skimage.metrics import structural_similarity as ssim
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from PIL import Image
+import os
+
+class QualityMetrics:
+    def __init__(self):
+        pass
+    
+    # 이미지 로드 및 전처리
+    @staticmethod
+    def load_image(image_path):
+        try:
+            image = Image.open(image_path).convert('RGB')
+            return np.array(image)
+        except Exception as e:
+            print(f"이미지 로드 실패 {image_path}: {e}")
+            return None
+    
+    # 두 이미지 크기 맞춤
+    @staticmethod
+    def ensure_same_size(img1, img2):
+        if img1.shape != img2.shape:
+            h = min(img1.shape[0], img2.shape[0])
+            w = min(img1.shape[1], img2.shape[1])
+            if len(img1.shape) == 3:
+                img1 = img1[:h, :w, :]
+                img2 = img2[:h, :w, :]
+            else:
+                img1 = img1[:h, :w]
+                img2 = img2[:h, :w]
+        return img1, img2
+    
+    
+    # SSIM 계산
+    def calculate_ssim(self, original, modified):
+        try:
+            if len(original.shape) == 3:
+                ssim_value = ssim(original, modified, 
+                                multichannel=True, 
+                                channel_axis=2,
+                                data_range=255)
+            else:
+                ssim_value = ssim(original, modified, data_range=255)
+            return round(ssim_value, 4)
+        except Exception as e:
+            print(f"SSIM 계산 오류: {e}")
+            return None
+    
+    # PSNR 계산
+    def calculate_psnr(self, original, modified):
+        try:
+            psnr_value = psnr(original, modified, data_range=255)
+            return round(psnr_value, 2)
+        except Exception as e:
+            print(f"PSNR 계산 오류: {e}")
+            return None
+    
+    # 두 이미지 비교
+    def compare_images(self, original_path, modified_path):
+        original = self.load_image(original_path)
+        modified = self.load_image(modified_path)
+        
+        if original is None or modified is None:
+            return None
+        
+        original, modified = self.ensure_same_size(original, modified)
+        
+        ssim_score = self.calculate_ssim(original, modified)
+        psnr_score = self.calculate_psnr(original, modified)
+        
+        return {
+            'ssim': ssim_score,
+            'psnr': psnr_score,
+            'quality_grade': self.get_quality_grade(ssim_score)
+        }
+    
+    # SSIM 기반 화질 등급
+    @staticmethod
+    def get_quality_grade(ssim_score):
+        if ssim_score is None:
+            return "Unknown"
+        elif ssim_score >= 0.95:
+            return "Excellent"
+        elif ssim_score >= 0.85:
+            return "Good"
+        elif ssim_score >= 0.75:
+            return "Fair"
+        else:
+            return "Poor"

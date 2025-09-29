@@ -133,3 +133,6 @@ imagenet_classes.json
 uploads/
 temp/
 *.db
+
+# 테스트 결과
+results/
