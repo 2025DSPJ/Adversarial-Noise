@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms  
 from transformers import AutoImageProcessor, AutoModelForImageClassification 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw
 import numpy as np
 from scipy.ndimage import gaussian_filter
 import base64
@@ -227,6 +227,38 @@ def tensor_to_base64(tensor):
         print(f"[ERROR] Base64 변환 실패: {e}")
         return None
     
+# 검은 패딩 제거
+def remove_black_padding(image_tensor):
+    try:
+        if len(image_tensor.shape) == 4:
+            image_tensor = image_tensor.squeeze(0)
+        
+        img_np = image_tensor.permute(1, 2, 0).cpu().numpy()
+        img_np = np.clip(img_np * 255, 0, 255).astype(np.uint8)
+        
+        # 검은색이 아닌 픽셀 찾기
+        non_black = np.any(img_np > 15, axis=2)
+        rows = np.any(non_black, axis=1)
+        cols = np.any(non_black, axis=0)
+        
+        if rows.any() and cols.any():
+            rmin, rmax = np.where(rows)[0][[0, -1]]
+            cmin, cmax = np.where(cols)[0][[0, -1]]
+            cropped = img_np[rmin:rmax+1, cmin:cmax+1]
+            
+            # 다시 텐서로 변환
+            cropped_normalized = cropped.astype(np.float32) / 255.0
+            cropped_tensor = torch.from_numpy(cropped_normalized).permute(2, 0, 1)
+            
+            return cropped_tensor
+        else:
+            return image_tensor
+            
+    except Exception as e:
+        print(f"[ERROR] 검은 패딩 제거 실패: {e}")
+        return image_tensor  # 실패 시 원본 반환
+
+    
 def send_progress(task_id, login_id, progress):
     if not task_id:
         return
@@ -317,8 +349,12 @@ def upload_file():
 
         # 80% - 이미지 후처리 및 Base64 변환
         send_progress(task_id, login_id, 80)
-        original_base64 = tensor_to_base64(result['original_image'])
-        processed_base64 = tensor_to_base64(result['adversarial_image'])
+
+        clean_original = remove_black_padding(result['original_image'])
+        clean_adversarial = remove_black_padding(result['adversarial_image'])
+
+        original_base64 = tensor_to_base64(clean_original)
+        processed_base64 = tensor_to_base64(clean_adversarial)
 
         if not original_base64 or not processed_base64:
             return jsonify({'error': 'Base64 변환 실패'}), 500
