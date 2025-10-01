@@ -14,20 +14,34 @@ import os
 import requests
 import json
 import uuid
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 
-# CORS 설정
-CORS(app, origins=[
-    "http://localhost:3000",  # React
-    "http://localhost:8080",  # Vue
-    "http://localhost:5173",  # Vite
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:8080",
-    "http://127.0.0.1:5173"
-])
+allowed_origins = os.getenv('ALLOWED_ORIGINS', '').split(',')
+allowed_origins = [origin.strip() for origin in allowed_origins if origin.strip()]
 
-SPRING_SERVER_URL = 'http://localhost:8080/progress'
+# CORS 설정
+if os.getenv('FLASK_ENV') == 'development':
+    CORS(app, origins="*")
+    print("[INFO] 개발 환경: CORS 모든 도메인 허용")
+else:
+    if allowed_origins:
+        CORS(app, origins=allowed_origins)
+        print(f"[INFO] 프로덕션 환경: CORS 허용 도메인 = {allowed_origins}")
+    else:
+        default_origins = [
+            "http://localhost:3000",
+            "http://localhost:8080", 
+            "http://localhost:5173"
+        ]
+        CORS(app, origins=default_origins)
+        print(f"[INFO] 기본 CORS 설정 사용: {default_origins}")
+
+SPRING_SERVER_URL = os.getenv('SPRING_SERVER_URL', 'http://localhost:8080/progress')
+print(f"[INFO] Spring Server URL: {SPRING_SERVER_URL}")
 
 # 모델 로드
 print("[INFO] WikiArt-Style 예술 분류 모델 로딩 중...")
